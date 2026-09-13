@@ -1,26 +1,44 @@
 from dotenv import load_dotenv
 import os
+from datetime import datetime
+import uuid
 
 load_dotenv()
 
-print("GOOGLE_API_KEY =", os.getenv("GOOGLE_API_KEY"))
+# Direct Google Gemini SDK.
+# This avoids the LangChain -> LangSmith -> xxhash native dependency chain.
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
-import os
+MODEL_NAME = "gemini-2.5-flash"
+_api_key = os.getenv("GOOGLE_API_KEY")
+_client = genai.Client(api_key=_api_key) if (genai and _api_key) else None
 
-# Load environment variables
-load_dotenv()
 
-# Initialize Gemini LLM
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
-    temperature=0.3,
-)
+def _generate(prompt: str) -> str:
+    """Send a prompt to Gemini and return plain text."""
+    if _client is None:
+        if not genai:
+            raise RuntimeError("google-genai is not installed. Run: pip install google-genai")
+        raise RuntimeError("GOOGLE_API_KEY is not configured in the environment.")
 
-# Prompt Template
-phishing_prompt = ChatPromptTemplate.from_template("""
+    config = types.GenerateContentConfig(temperature=0.3) if types else None
+    response = _client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=config,
+    )
+    text = getattr(response, "text", None)
+    if not text:
+        raise RuntimeError("Gemini returned an empty response.")
+    return text
+
+
+phishing_prompt = """
 You are an expert Cybersecurity SOC Analyst.
 
 A Machine Learning model has classified the following email as PHISHING.
@@ -105,9 +123,9 @@ Important Rules
 - Never claim certainty when evidence is unavailable.
 - Base every statement only on the supplied email and metadata.
 - Keep the report concise and professional.
-""")
+"""
 
-incident_report_prompt = ChatPromptTemplate.from_template("""
+incident_report_prompt = """
 You are a Senior SOC (Security Operations Center) Incident Response Analyst.
 
 Generate a professional cybersecurity incident report.
@@ -243,9 +261,9 @@ Rules:
 - Base every section only on the supplied AI analysis.
 - Do not repeat the same information.
 - Use concise SOC-style language.
-""")
+"""
 
-legitimate_prompt = ChatPromptTemplate.from_template("""
+legitimate_prompt = """
 You are an expert Cybersecurity SOC Analyst.
 
 A Machine Learning model has classified the following email as LEGITIMATE.
@@ -328,8 +346,58 @@ Important Rules
 - Never invent suspicious indicators.
 - Base every statement only on the supplied information.
 - Keep the response concise and professional.
-""")
-# Create analysis chain
+"""
+
+
+
+email_security_prompt = """
+You are a senior SOC email security analyst.
+
+You are reviewing a pasted email. A machine-learning classifier has also produced a preliminary verdict,
+but that verdict is NOT ground truth. Your job is to independently assess the supplied message and explain
+whether the evidence supports a phishing/suspicious or legitimate assessment.
+
+ML preliminary verdict:
+{prediction}
+
+Sender:
+{sender}
+
+Subject:
+{subject}
+
+Contains links:
+{has_links}
+
+Attachment references:
+{has_attachments}
+
+Email content:
+{email}
+
+Use ONLY the evidence supplied above. Do not invent sender authentication results, domain reputation,
+malware, attachments, spoofing, or user activity that is not present.
+
+Return concise SOC-style Markdown with exactly these sections:
+
+## Analyst verdict
+Choose: Suspicious / Likely legitimate / Inconclusive
+
+## Key indicators
+List only indicators visible in the supplied message or metadata. If none are present, say:
+No clear security indicators identified from the supplied content.
+
+## Reasoning
+Explain briefly why the evidence supports the analyst verdict. Treat the ML result as a separate signal.
+
+## Recommended action
+Give 2–4 practical next steps appropriate to the evidence.
+
+Important:
+- A legitimate ML result does not force a legitimate AI assessment.
+- A phishing ML result does not prove phishing by itself.
+- Do not claim certainty when the supplied evidence is insufficient.
+"""
 
 
 def generate_threat_analysis(
@@ -340,31 +408,18 @@ def generate_threat_analysis(
     has_links: str = "Unknown",
     has_attachments: str = "Unknown",
 ) -> str:
-    """
-    Generates a structured AI cybersecurity report
-    using ML prediction and extracted email metadata.
-    """
-
+    """Generate a structured AI cybersecurity report using Gemini."""
     try:
-
-        if prediction.lower() == "phishing":
-            chain = phishing_prompt | llm
-        else:
-            chain = legitimate_prompt | llm
-
-        response = chain.invoke(
-            {
-                "prediction": prediction,
-                "sender": sender,
-                "subject": subject,
-                "has_links": has_links,
-                "has_attachments": has_attachments,
-                "email": email_text,
-            }
+        template = email_security_prompt
+        prompt = template.format(
+            prediction=prediction,
+            sender=sender,
+            subject=subject,
+            has_links=has_links,
+            has_attachments=has_attachments,
+            email=email_text,
         )
-
-        return response.content
-
+        return _generate(prompt)
     except Exception as e:
         return f"""
 # ❌ AI Analysis Error
@@ -379,13 +434,11 @@ Please verify:
 - Internet connection is available.
 - Gemini API quota has not been exceeded.
 """
-    
-def generate_website_analysis(url, risk_score, indicators, verdict):
-    """
-    Generates an AI-powered website security analysis.
-    """
 
-    website_prompt = ChatPromptTemplate.from_template("""
+
+def generate_website_analysis(url, risk_score, indicators, verdict):
+    """Generate an AI-powered website security analysis."""
+    website_prompt = """
 You are an expert Cybersecurity Web Security Analyst.
 
 A heuristic phishing detection engine has already analyzed a website.
@@ -505,20 +558,15 @@ Important Rules
 - Never mention malware, credential theft or phishing risks for LOW RISK websites.
 - Never include sections that do not belong to the selected report type.
 - Keep the response concise, professional and suitable for a cybersecurity dashboard.
-""")
-    
-    website_chain = website_prompt | llm
-
+"""
     try:
-        response = website_chain.invoke({
-            "url": url,
-            "risk_score": risk_score,
-            "verdict": verdict,
-            "indicators": ", ".join(indicators) if indicators else "None"
-        })
-
-        return response.content
-
+        prompt = website_prompt.format(
+            url=url,
+            risk_score=risk_score,
+            verdict=verdict,
+            indicators=", ".join(indicators) if indicators else "None",
+        )
+        return _generate(prompt)
     except Exception as e:
         return f"""
 # ❌ AI Website Analysis Error
@@ -526,11 +574,6 @@ Important Rules
 **Reason:**
 {str(e)}
 """
-
-print("generate_website_analysis loaded")
-
-from datetime import datetime
-import uuid
 
 
 def generate_incident_report(
@@ -540,31 +583,24 @@ def generate_incident_report(
     threat_type,
     risk_score,
 ):
-    incident_chain = incident_report_prompt | llm
-
+    """Generate a professional incident report using Gemini."""
     incident_id = (
         f"CS-{datetime.now().strftime('%Y%m%d')}-"
         f"{str(uuid.uuid4())[:8].upper()}"
     )
-
     generated_time = datetime.now().strftime("%d %B %Y %I:%M %p")
 
     try:
-
-        response = incident_chain.invoke(
-            {
-                "incident_id": incident_id,
-                "generated_time": generated_time,
-                "analysis_type": analysis_type,
-                "threat_level": threat_level,
-                "threat_type": threat_type,
-                "risk_score": risk_score,
-                "analysis": analysis,
-            }
+        prompt = incident_report_prompt.format(
+            incident_id=incident_id,
+            generated_time=generated_time,
+            analysis_type=analysis_type,
+            threat_level=threat_level,
+            threat_type=threat_type,
+            risk_score=risk_score,
+            analysis=analysis,
         )
-
-        return response.content
-
+        return _generate(prompt)
     except Exception as e:
         print("Incident Report Error:", e)
         raise

@@ -54,11 +54,18 @@ def mitre_mapping(threat_type: str, indicators=None):
         out.append({"id":"T1110","name":"Brute Force","reason":"Repeated authentication failures can indicate password guessing."})
     seen=set(); return [x for x in out if not (x["id"] in seen or seen.add(x["id"]))]
 
-def _severity(score):
+def severity_from_score(score):
+    """Return the canonical SOC severity and priority for a 0-100 risk score."""
+    score = max(0, min(100, int(float(score))))
     if score >= 85: return "CRITICAL", "P1"
     if score >= 65: return "HIGH", "P2"
     if score >= 40: return "MEDIUM", "P3"
     return "LOW", "P4"
+
+
+# Backward-compatible alias for existing callers.
+def _severity(score):
+    return severity_from_score(score)
 
 def create_alert(*, source, threat_type, confidence, risk_score, indicators, summary):
     score = max(0, min(100, int(risk_score))); severity, priority = _severity(score)
