@@ -3,6 +3,6 @@ pandas
 scikit-learn
 joblib
 python-dotenv
-google-genai
+openai
 reportlab
 pytest

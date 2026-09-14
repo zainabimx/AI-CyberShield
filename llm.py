@@ -5,95 +5,81 @@ from datetime import datetime
 import uuid
 
 import streamlit as st
+from openai import OpenAI
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 load_dotenv()
 
+
 # ============================================================
-# GOOGLE GEMINI CONFIGURATION
+# OPENROUTER CONFIGURATION
 # ============================================================
 
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    genai = None
-    types = None
+MODEL_NAME = "google/gemini-3.6-flash"
 
+_api_key = os.getenv("OPENROUTER_API_KEY")
 
-MODEL_NAME = "gemini-3.6-flash"
-
-
-# ------------------------------------------------------------
-# API KEY
-# ------------------------------------------------------------
-# Local:
-#   .env -> GOOGLE_API_KEY
-#
-# Streamlit Cloud:
-#   Settings -> Secrets
-#   GOOGLE_API_KEY = "..."
-# ------------------------------------------------------------
-
-_api_key = os.getenv("GOOGLE_API_KEY")
-
+# Streamlit Cloud fallback
 if not _api_key:
     try:
-        _api_key = st.secrets["GOOGLE_API_KEY"]
+        _api_key = st.secrets["OPENROUTER_API_KEY"]
     except Exception:
         _api_key = None
 
 
-_client = (
-    genai.Client(api_key=_api_key)
-    if (genai and _api_key)
-    else None
-)
+_client = None
+
+if _api_key:
+    _client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=_api_key,
+    )
 
 
 # ============================================================
-# GEMINI GENERATION ENGINE
+# AI GENERATION ENGINE
 # ============================================================
 
 def _generate(prompt: str) -> str:
     """
-    Send a prompt to Gemini with automatic retry handling
-    for temporary service availability errors.
+    Send a prompt to Gemini through OpenRouter.
+
+    Includes:
+    - API key validation
+    - 3000-token response limit
+    - Retry handling for temporary errors
+    - Clean error reporting
     """
 
     if _client is None:
-
-        if not genai:
-            raise RuntimeError(
-                "google-genai is not installed. "
-                "Run: pip install google-genai"
-            )
-
         raise RuntimeError(
-            "GOOGLE_API_KEY is not configured."
+            "OPENROUTER_API_KEY is not configured."
         )
-
-    config = (
-        types.GenerateContentConfig(
-            temperature=0.3
-        )
-        if types
-        else None
-    )
 
     last_error = None
 
-    # Three attempts for temporary Gemini failures
     for attempt in range(3):
 
         try:
 
-            response = _client.models.generate_content(
+            response = _client.chat.completions.create(
                 model=MODEL_NAME,
-                contents=prompt,
-                config=config,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=3000,
             )
 
-            text = getattr(response, "text", None)
+            # Safely extract response text
+            text = response.choices[0].message.content
 
             if not text:
                 raise RuntimeError(
@@ -105,26 +91,49 @@ def _generate(prompt: str) -> str:
         except Exception as e:
 
             last_error = e
-
             error_text = str(e).upper()
 
-            # Retry temporary availability errors
+            # Temporary availability / rate-limit errors
             if (
                 "503" in error_text
                 or "UNAVAILABLE" in error_text
+                or "429" in error_text
+                or "RATE LIMIT" in error_text
             ):
 
-                # 1 second -> 2 seconds -> 4 seconds
+                # 1 sec -> 2 sec -> 4 sec
                 time.sleep(2 ** attempt)
-
                 continue
 
-            # Do not retry permanent errors
+            # Authentication errors
+            if (
+                "401" in error_text
+                or "403" in error_text
+                or "API KEY" in error_text
+                or "API_KEY" in error_text
+            ):
+                raise RuntimeError(
+                    "OpenRouter API authentication failed. "
+                    "Please verify OPENROUTER_API_KEY."
+                )
+
+            # Credit / token limit errors
+            if (
+                "402" in error_text
+                or "CREDITS" in error_text
+                or "MAX_TOKENS" in error_text
+            ):
+                raise RuntimeError(
+                    "OpenRouter credits or token limit are "
+                    "insufficient for this request."
+                )
+
+            # Other errors
             raise
 
     raise RuntimeError(
-        f"Gemini temporarily unavailable after 3 attempts: "
-        f"{last_error}"
+        f"AI service temporarily unavailable after "
+        f"3 attempts: {last_error}"
     )
 
 
@@ -157,8 +166,17 @@ Attachment references:
 Email content:
 {email}
 
-Use ONLY the evidence supplied above. Do not invent sender authentication results, domain reputation,
-malware, attachments, spoofing, or user activity that is not present.
+Use ONLY the evidence supplied above.
+
+Do not invent:
+
+- sender authentication results
+- domain reputation
+- malware
+- attachment contents
+- spoofing
+- user activity
+- successful compromise
 
 Return concise SOC-style Markdown with exactly these sections:
 
@@ -180,15 +198,15 @@ Explain briefly why the evidence supports the analyst verdict.
 
 Treat the ML result as a separate signal.
 
-## Recommended action
-
-Give 2–4 practical next steps appropriate to the evidence.
-
 Important:
 
 - A legitimate ML result does not force a legitimate AI assessment.
 - A phishing ML result does not prove phishing by itself.
 - Do not claim certainty when the supplied evidence is insufficient.
+
+## Recommended action
+
+Give 2–4 practical next steps appropriate to the evidence.
 """
 
 
@@ -204,9 +222,6 @@ def generate_threat_analysis(
     has_links: str = "Unknown",
     has_attachments: str = "Unknown",
 ) -> str:
-    """
-    Generate AI-assisted email security analysis.
-    """
 
     try:
 
@@ -225,68 +240,71 @@ def generate_threat_analysis(
 
         error_text = str(e).upper()
 
-        # Temporary Gemini service outage
         if (
             "503" in error_text
             or "UNAVAILABLE" in error_text
+            or "429" in error_text
+            or "RATE LIMIT" in error_text
         ):
 
             return """
 ## 🤖 AI Analysis Temporarily Unavailable
 
-The Gemini AI analysis service is temporarily experiencing
-high demand.
-
-### Detection Result
-
-The underlying machine-learning detection result remains
-available and should be used as the primary detection signal.
-
-### Analyst Action
-
-Review the email evidence, risk score, confidence, and
-detected indicators while AI enrichment is temporarily
-unavailable.
+The Gemini AI analysis service is temporarily unavailable.
 
 **Detection Status:** Available
 
 **AI Status:** Temporarily unavailable
 
-Please retry the AI analysis later.
+The underlying machine-learning detection remains available.
+
+Please retry the AI analysis shortly.
 """
 
-        # API key / configuration problem
         if (
-            "API_KEY" in error_text
+            "402" in error_text
+            or "CREDITS" in error_text
+            or "MAX_TOKENS" in error_text
+        ):
+
+            return """
+## ⚠️ AI Analysis Token Limit
+
+The OpenRouter account does not currently have enough
+available credits for the requested response size.
+
+**Detection Status:** Available
+
+**AI Status:** Insufficient credits
+
+Please reduce the requested response size or add credits
+to the OpenRouter account.
+"""
+
+        if (
+            "401" in error_text
+            or "403" in error_text
             or "API KEY" in error_text
-            or "NOT CONFIGURED" in error_text
+            or "API_KEY" in error_text
         ):
 
             return """
 ## ⚠️ AI Analysis Configuration Error
 
-The Gemini AI analysis engine could not access a valid API key.
-
-### Detection Result
-
-The underlying machine-learning detection remains available.
+The Gemini AI analysis engine could not authenticate
+through OpenRouter.
 
 **Detection Status:** Available
 
-**AI Status:** Configuration error
+**AI Status:** Authentication error
 
-Please verify the Gemini API key configuration.
+Please verify the OPENROUTER_API_KEY configuration.
 """
 
-        # Other errors
         return f"""
 ## 🤖 AI Analysis Unavailable
 
 The AI enrichment service could not complete the analysis.
-
-### Detection Result
-
-The underlying security detection remains available.
 
 **Detection Status:** Available
 
@@ -308,9 +326,6 @@ def generate_website_analysis(
     indicators,
     verdict,
 ):
-    """
-    Generate AI-assisted website security analysis.
-    """
 
     website_prompt = """
 You are an expert Cybersecurity Web Security Analyst.
@@ -329,12 +344,17 @@ Verdict:
 Detected Indicators:
 {indicators}
 
-Your task is to generate a professional cybersecurity assessment based ONLY on the information provided.
+Your task is to generate a professional cybersecurity assessment
+based ONLY on the information provided.
 
 Never invent facts.
+
 Never speculate about hypothetical situations.
+
 Do not assume indicators that are not provided.
-Base every conclusion only on the supplied URL, heuristic score and detected indicators.
+
+Base every conclusion only on the supplied URL, heuristic score
+and detected indicators.
 
 ----------------------------------------
 IF Verdict = HIGH RISK
@@ -346,7 +366,7 @@ Generate the report using this format exactly:
 
 ## Threat Level
 
-(High)
+High
 
 ## Website Assessment
 
@@ -372,14 +392,10 @@ Do not mention indicators that are not present.
 
 ## Potential Risks
 
-Explain realistic risks such as:
+Explain realistic risks supported by the detected indicators.
 
-- Credential theft
-- Fake login pages
-- Malware delivery
-- Financial fraud
-
-Only include risks supported by the detected indicators.
+Do not claim that malware or credential theft is confirmed
+unless the supplied evidence establishes it.
 
 ## Recommended Actions
 
@@ -399,7 +415,7 @@ Generate the report using this format exactly:
 
 ## Security Status
 
-(Low Risk)
+Low Risk
 
 ## Website Assessment
 
@@ -409,33 +425,25 @@ Explain why the website appears safe based on the heuristic analysis.
 
 List only the positive indicators actually observed.
 
-Examples include:
-
-- HTTPS enabled
-- Clean domain structure
-- No suspicious keywords
-- Normal URL length
-- No excessive subdomains
-
-Only mention those that are actually supported by the heuristic analysis.
-
 ## Good Security Practices
 
-Provide 3–5 general cybersecurity tips for safely browsing legitimate websites.
+Provide 3–5 general cybersecurity tips for safely browsing
+legitimate websites.
 
 ## Executive Summary
 
 Summarize why the website currently appears safe.
 
 ----------------------------------------
-Important Rules
+IMPORTANT RULES
 ----------------------------------------
 
 - Never generate hypothetical attack scenarios.
-- Never mention malware, credential theft or phishing risks for LOW RISK websites.
-- Never include sections that do not belong to the selected report type.
-- Keep the response concise, professional and suitable for a cybersecurity dashboard.
+- Never invent security indicators.
+- Never claim a website is malicious without supporting evidence.
+- Keep the response concise and professional.
 """
+
 
     try:
 
@@ -456,68 +464,71 @@ Important Rules
 
         error_text = str(e).upper()
 
-        # Temporary Gemini service outage
         if (
             "503" in error_text
             or "UNAVAILABLE" in error_text
+            or "429" in error_text
+            or "RATE LIMIT" in error_text
         ):
 
             return """
 ## 🤖 AI Analysis Temporarily Unavailable
 
-The Gemini AI analysis service is temporarily experiencing
-high demand.
-
-### Detection Result
-
-The underlying website security detection remains available
-and is based on the URL analysis engine and detected
-security indicators.
-
-### Analyst Action
-
-Review the URL, risk score, verdict, and detected indicators
-while AI enrichment is temporarily unavailable.
+The Gemini AI analysis service is temporarily unavailable.
 
 **Detection Status:** Available
 
 **AI Status:** Temporarily unavailable
 
-Please retry the AI analysis later.
+The underlying website security detection remains available.
+
+Please retry the AI analysis shortly.
 """
 
-        # API key / configuration problem
         if (
-            "API_KEY" in error_text
+            "402" in error_text
+            or "CREDITS" in error_text
+            or "MAX_TOKENS" in error_text
+        ):
+
+            return """
+## ⚠️ AI Analysis Token Limit
+
+The OpenRouter account does not currently have enough
+available credits for the requested response size.
+
+**Detection Status:** Available
+
+**AI Status:** Insufficient credits
+
+Please reduce the requested response size or add credits
+to the OpenRouter account.
+"""
+
+        if (
+            "401" in error_text
+            or "403" in error_text
             or "API KEY" in error_text
-            or "NOT CONFIGURED" in error_text
+            or "API_KEY" in error_text
         ):
 
             return """
 ## ⚠️ AI Analysis Configuration Error
 
-The Gemini AI analysis engine could not access a valid API key.
-
-### Detection Result
-
-The underlying website security detection remains available.
+The Gemini AI analysis engine could not authenticate
+through OpenRouter.
 
 **Detection Status:** Available
 
-**AI Status:** Configuration error
+**AI Status:** Authentication error
 
-Please verify the Gemini API key configuration.
+Please verify the OPENROUTER_API_KEY configuration.
 """
 
-        # Other errors
         return f"""
 ## 🤖 AI Analysis Unavailable
 
 The AI enrichment service could not complete the analysis.
-
-### Detection Result
-
-The underlying website security assessment remains available.
 
 **Detection Status:** Available
 
@@ -687,9 +698,6 @@ def generate_incident_report(
     threat_type,
     risk_score,
 ):
-    """
-    Generate a professional incident report using Gemini.
-    """
 
     incident_id = (
         f"CS-{datetime.now().strftime('%Y%m%d')}-"
@@ -700,22 +708,14 @@ def generate_incident_report(
         "%d %B %Y %I:%M %p"
     )
 
-    try:
+    prompt = incident_report_prompt.format(
+        incident_id=incident_id,
+        generated_time=generated_time,
+        analysis_type=analysis_type,
+        threat_level=threat_level,
+        threat_type=threat_type,
+        risk_score=risk_score,
+        analysis=analysis,
+    )
 
-        prompt = incident_report_prompt.format(
-            incident_id=incident_id,
-            generated_time=generated_time,
-            analysis_type=analysis_type,
-            threat_level=threat_level,
-            threat_type=threat_type,
-            risk_score=risk_score,
-            analysis=analysis,
-        )
-
-        return _generate(prompt)
-
-    except Exception as e:
-
-        print("Incident Report Error:", e)
-
-        raise
+    return _generate(prompt)
