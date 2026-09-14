@@ -476,27 +476,36 @@ Screenshots of the platform can be added below.
 
 ### 🏠 SOC Command Center
 
-_Add screenshot here_
+<img width="1797" height="915" alt="Screenshot 2026-09-14 221738" src="https://github.com/user-attachments/assets/e2dca9b6-1ee8-49b4-b2ec-4368963b4b93" />
+
 
 ### 📧 Email Security
 
-_Add screenshot here_
+<img width="1802" height="927" alt="Screenshot 2026-09-14 221220" src="https://github.com/user-attachments/assets/d35f5b48-82d6-47d7-84b6-d7b1d513bcc7" />
+
+<img width="1796" height="918" alt="Screenshot 2026-09-14 221317" src="https://github.com/user-attachments/assets/c71bccaf-357d-4f9e-ae28-e520af5c6e8d" />
+
+
 
 ### 🌐 Domain Security
 
-_Add screenshot here_
+<img width="1780" height="916" alt="Screenshot 2026-09-14 221441" src="https://github.com/user-attachments/assets/834949f5-4384-41be-b657-7f383132a650" />
+
 
 ### 🚨 Alert Queue
 
-_Add screenshot here_
+<img width="1807" height="911" alt="Screenshot 2026-09-14 221857" src="https://github.com/user-attachments/assets/54ae8ae9-891a-46ee-b0e6-a99305dae97b" />
+
 
 ### 🔎 Incident Investigation
 
-_Add screenshot here_
+<img width="1802" height="917" alt="Screenshot 2026-09-14 221925" src="https://github.com/user-attachments/assets/2d491e1c-ecc6-420a-9fca-143dbcd20127" />
+
 
 ### 📄 Incident Reporting
 
-_Add screenshot here_
+<img width="1797" height="917" alt="Screenshot 2026-09-14 222057" src="https://github.com/user-attachments/assets/abbe5818-c567-4638-9919-3e2e0a967cb1" />
+
 
 ---
 
