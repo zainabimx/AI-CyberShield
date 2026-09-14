@@ -2,11 +2,11 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime
 import uuid
+import streamlit as st
 
 load_dotenv()
 
-# Direct Google Gemini SDK.
-# This avoids the LangChain -> LangSmith -> xxhash native dependency chain.
+# Direct Google Gemini SDK
 try:
     from google import genai
     from google.genai import types
@@ -15,26 +15,64 @@ except ImportError:
     types = None
 
 MODEL_NAME = "gemini-3.6-flash"
+
 _api_key = os.getenv("GOOGLE_API_KEY")
+
+if not _api_key:
+    try:
+        _api_key = st.secrets["GOOGLE_API_KEY"]
+    except Exception:
+        _api_key = None
+
 _client = genai.Client(api_key=_api_key) if (genai and _api_key) else None
 
 
 def _generate(prompt: str) -> str:
-    """Send a prompt to Gemini and return plain text."""
+    """Send a prompt to Gemini with automatic retry for temporary failures."""
     if _client is None:
         if not genai:
-            raise RuntimeError("google-genai is not installed. Run: pip install google-genai")
-        raise RuntimeError("GOOGLE_API_KEY is not configured in the environment.")
+            raise RuntimeError(
+                "google-genai is not installed. Run: pip install google-genai"
+            )
+        raise RuntimeError(
+            "GOOGLE_API_KEY is not configured in the environment."
+        )
 
     config = types.GenerateContentConfig(temperature=0.3) if types else None
-    response = _client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=config,
+
+    last_error = None
+
+    for attempt in range(3):
+        try:
+            response = _client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=config,
+            )
+
+            text = getattr(response, "text", None)
+
+            if not text:
+                raise RuntimeError("Gemini returned an empty response.")
+
+            return text
+
+        except Exception as e:
+            last_error = e
+
+            # Retry temporary Gemini availability/rate-limit failures.
+            error_text = str(e).upper()
+
+            if "503" in error_text or "UNAVAILABLE" in error_text:
+                import time
+                time.sleep(2 ** attempt)
+                continue
+
+            raise
+
+    raise RuntimeError(
+        f"Gemini temporarily unavailable after 3 attempts: {last_error}"
     )
-    text = getattr(response, "text", None)
-    if not text:
-        raise RuntimeError("Gemini returned an empty response.")
     return text
 
 
